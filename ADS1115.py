@@ -1,49 +1,83 @@
-# This module is a library for handling SDC40 co2 sensors on a Raspberry Pi
-# https://sensirion.com/media/documents/48C4B7FB/64C134E7/Sensirion_SCD4x_Datasheet.pdf
-
-import smbus2
+#!/usr/bin/env python
 import time
+import os
+import time
+import math
+from ads1015 import ADS1015
 
-COMMAND = {
-    'stop_periodic_measurement': 0x3f86,
-    'start_periodic_measurement': 0x21b1,
-    'reinit' : 0x3646
-}
+CHANNELS = ["in0/ref", "in1/ref", "in2/ref", "in1/gnd"]
 
-DEFAULT_ADS_ADDRESS               = 0x48
-WAIT_FOR_READING_RETRY_SECS         = 0.5
-WAIT_AFTER_START_PERIODIC_MEASURE   = 0.1
-WAIT_FOR_MEASUREMENT_STOP_SECS      = 0.5
-WAIT_FOR_REINIT_SECS                = 0.03
-DEFAULT_RPI_I2C_BUS                 = 1
-MAX_READ_RETRIES                    = 40
+TIME_LENGTH_FOR_DIFS_SECS = 15
 
-HUMIDITY_BYTES_START    = 6
-BYTES_IN_READING        = 9
-TEMP_BYTES_START        = 3
-CO2_BYTES_START         = 0
+print(
+    """read-all.py - read all three inputs of the ADC
 
-class ADS1115 :
-    def __init__ (self, address=DEFAULT_ADS_ADDRESS, bus_num=DEFAULT_RPI_I2C_BUS):
-        self.bus = smbus2.SMBus(bus_num)
-        self.address = address
-        # Allow a short pause to allow the bus to initialize.
-        self.initialize_sensor()
+Press Ctrl+C to exit!
+"""
+)
 
+ads1015 = ADS1015()
+chip_type = ads1015.detect_chip_type()
 
-    def initialize_sensor(self):
-        # Stop measurement must be sent before reint can be sent
-        self.__send_command(COMMAND['stop_periodic_measurement'])
-        time.sleep(WAIT_FOR_MEASUREMENT_STOP_SECS)
+print("Found: {}".format(chip_type))
 
-    def __send_command(self, cmd) :
-        [register_start, hex_command] = self.__split_hex_word(cmd)
-        self.bus.write_byte_data(self.address, register_start, hex_command)
+ads1015.set_mode("single")
+ads1015.set_programmable_gain(4)
 
-    @staticmethod
-    def __split_hex_word(word, byte_count=2):
-        bytes_value = word.to_bytes(byte_count, byteorder='big')
+# if chip_type == "ADS1015":
+ads1015.set_sample_rate(1600)
+# else:
+# ads1015.set_sample_rate(860)
 
-        return bytes_value
-    
+start_time = time.time()
+diffMinutes = []
+minutesIn = 0
 
+try:
+    chMin = [100,100,100,100]
+    chMax = [0,0,0,0]
+    chMaxDiff = [0,0,0,0]
+
+    while True:
+        now = time.time()
+        secsPassed = math.floor(now - start_time)        
+
+        if (math.floor(secsPassed / TIME_LENGTH_FOR_DIFS_SECS) > minutesIn) :
+            minutesIn = math.floor(secsPassed / TIME_LENGTH_FOR_DIFS_SECS)
+            diffMinutes.append(chMaxDiff)
+            chMin = [100,100,100,100]
+            chMax = [0,0,0,0]
+            chMaxDiff = [0,0,0,0]         
+
+        os.system('clear')
+        print(f'Time in { secsPassed }')
+        reference = ads1015.get_reference_voltage()
+        print("Reference voltage: {:6.3f}v \n".format(reference))
+
+        for index, channel in enumerate(CHANNELS):
+            value = ads1015.get_compensated_voltage(
+                channel=channel, reference_voltage=reference
+            )
+            chMin[index] = value if value < chMin[index] else chMin[index]
+            chMax[index] = value if value > chMax[index] else chMax[index]
+
+            dif = chMax[index] - chMin[index]
+            chMaxDiff[index] = dif if dif > chMaxDiff[index] else chMaxDiff[index]
+
+            print("{}: {:6.3f}v".format(channel, value))
+            print("{} Max: {:6.3f}v".format(channel, chMax[index]))
+            print("{} Min: {:6.3f}v".format(channel, chMin[index]))
+            print("{} Diff: {:6.3f}v".format(channel, dif))
+            print("{} Max Diff: {:6.3f}v".format(channel, chMaxDiff[index]))
+            print("")
+
+        for i, difMin in enumerate(diffMinutes) : 
+            for j, dif in enumerate(difMin) : 
+                print(f'ch {j} : {round(dif, 2)}')
+            print('')
+
+        print("")
+        time.sleep(3)
+
+except KeyboardInterrupt:
+    pass
